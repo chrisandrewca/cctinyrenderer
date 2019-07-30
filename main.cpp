@@ -121,8 +121,11 @@ Vec3f barycentric(Vec3f a, Vec3f b, Vec3f c, Vec3f p)
 	return Vec3f(-1, 1, 1);
 }
 
-void triangle(Vec3f *pts, float *zbuffer, TGAImage &frame, const TGAColor &color)
+void triangle(Vec3f *pts, Vec2f *texCoords, float lightIntensity, float *zbuffer, TGAImage &frame, TGAImage &texture)
 {
+	/*
+	 * Vert bounding box
+	 */
 	Vec2f bboxmin(std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
 	Vec2f bboxmax(-std::numeric_limits<float>::max(), -std::numeric_limits<float>::max());
 	Vec2f clamp(frame.get_width() - 1, frame.get_height() - 1);
@@ -136,6 +139,8 @@ void triangle(Vec3f *pts, float *zbuffer, TGAImage &frame, const TGAColor &color
 		}
 	}
 
+	// you've found point P, what are its texcoords relative to A, B, C?
+	// what are P's texcoords?
 	Vec3f p;
 	for (p.x = bboxmin.x; p.x <= bboxmax.x; p.x++)
 	{
@@ -145,6 +150,7 @@ void triangle(Vec3f *pts, float *zbuffer, TGAImage &frame, const TGAColor &color
 			if (bcScreen.x < 0 || bcScreen.y < 0 || bcScreen.z < 0)
 				continue;
 
+			// We're using bcScreen to weight values of z and texCoords
 			p.z = 0;
 			for (int i = 0; i < 3; i++) // TODO assumes pts.len = 3
 			{
@@ -156,19 +162,36 @@ void triangle(Vec3f *pts, float *zbuffer, TGAImage &frame, const TGAColor &color
 			if (zbuffer[zindex] < p.z)
 			{
 				zbuffer[zindex] = p.z;
+
+				// float u = (texCoords[0].x * bcScreen.x) + (texCoords[1].x * bcScreen.y) + (texCoords[2].x * bcScreen.z);
+				// float v = (texCoords[0].y * bcScreen.x) + (texCoords[1].y * bcScreen.y) + (texCoords[2].y * bcScreen.z);
+				float u = 0.f, v = 0.f;
+				for (int i = 0; i < 3; i++) u += texCoords[i].x * bcScreen[i];
+				for (int i = 0; i < 3; i++) v += texCoords[i].y * bcScreen[i];
+
+				auto color = texture.get(u * texture.get_width(), (1 - v) * texture.get_height());
+				color.r *= lightIntensity;
+				color.g *= lightIntensity;
+				color.b *= lightIntensity;
 				frame.set(p.x, p.y, color);
 			}
 		}
 	}
 }
 
-void triangleRaster(const char *objFilePath, const char *objBasePath, TGAImage &frame)
+void triangleRaster(const char *objFilePath, const char *objBasePath, const char *texturePath, TGAImage &frame)
 {
-	int width = frame.get_width(), height = frame.get_height();
+	int frameWidth = frame.get_width(), frameHeight = frame.get_height();
 
-	int zlen = width * height;
+	int zlen = frameWidth * frameHeight;
 	float *zbuffer = new float[zlen];
 	std::fill(zbuffer, zbuffer + zlen, -std::numeric_limits<float>::max());
+
+	TGAImage texture;
+	if (!texture.read_tga_file("obj/african_head_diffuse.tga"))
+		std::cout << "Unable to read " << texturePath << std::endl;
+
+	// int texWidth = texture.get_width(), texHeight = texture.get_height();
 
 	tinyobj::attrib_t attrib;
 	std::vector<tinyobj::shape_t> shapes;
@@ -183,6 +206,7 @@ void triangleRaster(const char *objFilePath, const char *objBasePath, TGAImage &
 			// TODO use numVerts
 			Vec3f worldCoords[3];
 			Vec3f screenCoords[3];
+			Vec2f texCoords[3];
 
 			auto numVerts = shape.mesh.num_face_vertices[iface];
 			for (auto ivert = 0; ivert < numVerts; ivert++)
@@ -195,7 +219,12 @@ void triangleRaster(const char *objFilePath, const char *objBasePath, TGAImage &
 
 				worldCoords[ivert] = Vec3f(x, y, z);
 				// world to screen coords
-				screenCoords[ivert] = Vec3f((int)((x + 1.f) * width / 2.f + .5f), (int)((y + 1.f) * height / 2.f + .5f), z);
+				screenCoords[ivert] = Vec3f((int)((x + 1.f) * frameWidth / 2.f + .5f), (int)((y + 1.f) * frameHeight / 2.f + .5f), z);
+
+				auto tx = attrib.texcoords[2 * face.texcoord_index + 0];
+				auto ty = attrib.texcoords[2 * face.texcoord_index + 1];
+
+				texCoords[ivert] = Vec2f(tx, ty);
 			}
 
 			// illumination
@@ -205,7 +234,7 @@ void triangleRaster(const char *objFilePath, const char *objBasePath, TGAImage &
 
 			// back face culling
 			if (intensity > 0)
-				triangle(screenCoords, zbuffer, frame, TGAColor(intensity * 255, intensity * 255, intensity * 255, 255)); // TGAColor(rand() % 255, rand() % 255, rand() % 255, 255));
+				triangle(screenCoords, texCoords, intensity, zbuffer, frame, texture);
 
 			faceOffset += numVerts;
 		}
@@ -217,7 +246,7 @@ void triangleRaster(const char *objFilePath, const char *objBasePath, TGAImage &
 int main(int argc, char **argv)
 {
 	TGAImage frame(500, 500, TGAImage::RGB);
-	triangleRaster("obj/african_head.obj", "obj/", frame);
+	triangleRaster("obj/african_head.obj", "obj/", "obj/african_head_diffuse.tga", frame);
 
 	frame.flip_vertically(); // i want to have the origin at the left bottom corner of the image
 	frame.write_tga_file("framebuffer.tga");
